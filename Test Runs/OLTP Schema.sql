@@ -173,38 +173,52 @@ FROM generate_series(1,10000) gs;
 --======================================================
 -- Question 1
 EXPLAIN (ANALYZE)
-SELECT
-  date_trunc('month', e.encounter_date)::date AS month_start,
-  s.specialty_name,
-  e.encounter_type,
-  COUNT(*) AS total_encounters,
-  COUNT(DISTINCT e.patient_id) AS unique_patients
+SELECT date_trunc('month', e.encounter_date)::date AS month_start, s.specialty_name,
+  e.encounter_type, COUNT(*) AS total_encounters, COUNT(DISTINCT e.patient_id) AS unique_patients
 FROM encounters e
 JOIN providers p   ON p.provider_id = e.provider_id
 JOIN specialties s ON s.specialty_id = p.specialty_id
-GROUP BY
-  date_trunc('month', e.encounter_date)::date,
-  s.specialty_name,
-  e.encounter_type
-ORDER BY
-  month_start, s.specialty_name, e.encounter_type;
+GROUP BY date_trunc('month', e.encounter_date)::date, s.specialty_name, e.encounter_type
+ORDER BY month_start, s.specialty_name, e.encounter_type;
 
 -- Question 2
 EXPLAIN (ANALYZE)
-SELECT
-  d.icd10_code,
-  p.cpt_code,
-  COUNT(DISTINCT ed.encounter_id) AS encounter_count
+SELECT d.icd10_code, p.cpt_code, COUNT(DISTINCT ed.encounter_id) AS encounter_count
 FROM encounter_diagnoses ed
-JOIN diagnoses d
-  ON d.diagnosis_id = ed.diagnosis_id
-JOIN encounter_procedures ep
-  ON ep.encounter_id = ed.encounter_id
-JOIN procedures p
-  ON p.procedure_id = ep.procedure_id
+JOIN diagnoses d ON d.diagnosis_id = ed.diagnosis_id
+JOIN encounter_procedures ep ON ep.encounter_id = ed.encounter_id
+JOIN procedures p ON p.procedure_id = ep.procedure_id
 GROUP BY d.icd10_code, p.cpt_code
 ORDER BY encounter_count DESC
 LIMIT 20;
+
+-- Question 3:
+EXPLAIN (ANALYZE)
+SELECT s.specialty_name, COUNT(DISTINCT e1.encounter_id) AS inpatient_discharges,
+  COUNT(DISTINCT CASE WHEN e2.encounter_id IS NOT NULL THEN e1.encounter_id END) AS readmitted_in_30d,
+  ROUND(COUNT(DISTINCT CASE WHEN e2.encounter_id IS NOT NULL THEN e1.encounter_id END)::numeric / NULLIF(COUNT(DISTINCT e1.encounter_id), 0), 4)
+    AS readmission_rate
+FROM encounters e1
+JOIN providers p1 ON p1.provider_id = e1.provider_id
+JOIN specialties s ON s.specialty_id = p1.specialty_id
+LEFT JOIN encounters e2 ON e2.patient_id = e1.patient_id
+ AND e2.encounter_date > e1.discharge_date
+ AND e2.encounter_date <= e1.discharge_date + INTERVAL '30 days'
+WHERE e1.encounter_type = 'Inpatient'
+GROUP BY s.specialty_name
+ORDER BY readmission_rate DESC;
+
+--Question 4:
+EXPLAIN (ANALYZE)
+SELECT date_trunc('month', b.claim_date)::date AS month_start, s.specialty_name, SUM(b.allowed_amount) AS total_allowed_amount
+FROM billing b
+JOIN encounters e ON e.encounter_id = b.encounter_id
+JOIN providers p ON p.provider_id = e.provider_id
+JOIN specialties s ON s.specialty_id = p.specialty_id
+GROUP BY date_trunc('month', b.claim_date)::date, s.specialty_name
+ORDER BY month_start, total_allowed_amount DESC;
+
+
 
 
 
