@@ -210,13 +210,13 @@ ORDER BY readmission_rate DESC;
 
 --Question 4:
 EXPLAIN (ANALYZE)
-SELECT date_trunc('month', b.claim_date)::date AS month_start, s.specialty_name, SUM(b.allowed_amount) AS total_allowed_amount
+SELECT to_char(b.claim_date, 'YYYY-MM') AS "Month", s.specialty_name as "Speciality", SUM(b.allowed_amount) AS total_allowed_amount
 FROM billing b
 JOIN encounters e ON e.encounter_id = b.encounter_id
 JOIN providers p ON p.provider_id = e.provider_id
 JOIN specialties s ON s.specialty_id = p.specialty_id
-GROUP BY date_trunc('month', b.claim_date)::date, s.specialty_name
-ORDER BY month_start, total_allowed_amount DESC;
+GROUP BY "Month", s.specialty_name
+ORDER BY "Month", total_allowed_amount DESC;
 
 
 
