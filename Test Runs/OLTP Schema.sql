@@ -172,7 +172,7 @@ FROM generate_series(1,10000) gs;
 -- TEST RUNS & ANALYSIS
 --======================================================
 -- Question 1
-EXPLAIN (ANALYZE, BUFFERS)
+EXPLAIN (ANALYZE)
 SELECT
   date_trunc('month', e.encounter_date)::date AS month_start,
   s.specialty_name,
@@ -188,3 +188,25 @@ GROUP BY
   e.encounter_type
 ORDER BY
   month_start, s.specialty_name, e.encounter_type;
+
+-- Question 2
+EXPLAIN (ANALYZE)
+SELECT
+  d.icd10_code,
+  p.cpt_code,
+  COUNT(DISTINCT ed.encounter_id) AS encounter_count
+FROM encounter_diagnoses ed
+JOIN diagnoses d
+  ON d.diagnosis_id = ed.diagnosis_id
+JOIN encounter_procedures ep
+  ON ep.encounter_id = ed.encounter_id
+JOIN procedures p
+  ON p.procedure_id = ep.procedure_id
+GROUP BY d.icd10_code, p.cpt_code
+ORDER BY encounter_count DESC
+LIMIT 20;
+
+
+
+
+
