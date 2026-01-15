@@ -102,47 +102,89 @@ CREATE TABLE billing (
 CREATE INDEX idx_claim_date ON billing(claim_date);
 
 -- =========================================
--- SAMPLE DATA
+-- SAMPLE  (RANDOM) DATA: 10000 Records for each table
 -- =========================================
 
-INSERT INTO specialties VALUES (1, 'Cardiology', 'CARD'), (2, 'Internal Medicine', 'IM'), (3, 'Emergency', 'ER');
+-- PATIENTS
+INSERT INTO patients
+SELECT gs, 'First'||gs, 'Last'||gs, date '1950-01-01' + (random()*20000)::int, CASE WHEN random()<0.5 THEN 'M' ELSE 'F' END, 'MRN'||lpad(gs::text,6,'0')
+FROM generate_series(1,10000) gs;
 
-INSERT INTO departments VALUES (1, 'Cardiology Unit', 3, 20), (2, 'Internal Medicine', 2, 30), (3, 'Emergency', 1, 45);
+-- SPECIALITIES
+INSERT INTO specialties
+SELECT gs, 'Specialty '||gs, 'SP'||gs
+FROM generate_series(1,10000) gs;
 
-INSERT INTO providers VALUES (101, 'James', 'Chen', 'MD', 1, 1), (102, 'Sarah', 'Williams', 'MD', 2, 2), (103, 'Michael', 'Rodriguez', 'MD', 3, 3);
+-- DEPARTMENTS
+INSERT INTO departments
+SELECT gs, 'Department '||gs, (gs % 10)+1, (gs % 100)+10
+FROM generate_series(1,10000) gs;
 
-INSERT INTO patients VALUES (1001, 'John', 'Doe', '1955-03-15', 'M', 'MRN001'),(1002, 'Jane', 'Smith', '1962-07-22', 'F', 'MRN002'),
-(1003, 'Robert', 'Johnson', '1948-11-08', 'M', 'MRN003');
+-- PROVIDERS
+INSERT INTO providers
+SELECT gs, 'ProvFirst'||gs, 'ProvLast'||gs, 'MD', (random()*9999)::int + 1, (random()*9999)::int + 1
+FROM generate_series(1,10000) gs;
 
-INSERT INTO diagnoses VALUES (3001, 'I10',  'Hypertension'), (3002, 'E11.9','Type 2 Diabetes'), (3003, 'I50.9','Heart Failure');
+-- ENCOUNTERS
+INSERT INTO encounters
+SELECT gs, (random()*9999)::int + 1, (random()*9999)::int + 1, (ARRAY['Outpatient','Inpatient','ER'])[ (random()*2)::int + 1 ],
+  timestamp '2023-01-01' + random()*interval '730 days', timestamp '2023-01-01' + random()*interval '730 days' + random()*interval '5 days', (random()*9999)::int + 1
+FROM generate_series(1,10000) gs;
 
-INSERT INTO procedures VALUES (4001, '99213', 'Office Visit'), (4002, '93000', 'EKG'), (4003, '71020', 'Chest X-ray');
+-- Make discharge_date AFTER encounter_date
+UPDATE encounters
+SET discharge_date =
+  CASE
+    WHEN encounter_type = 'Outpatient' THEN encounter_date + (random() * interval '6 hours')
+    WHEN encounter_type = 'ER'        THEN encounter_date + (random() * interval '12 hours')
+    ELSE                                   encounter_date + (random() * interval '10 days')
+  end;
 
-INSERT INTO encounters VALUES
-(7001, 1001, 101, 'Outpatient', '2024-05-10 10:00:00', '2024-05-10 11:30:00', 1),
-(7002, 1001, 101, 'Inpatient',  '2024-06-02 14:00:00', '2024-06-06 09:00:00', 1),
-(7003, 1002, 102, 'Outpatient', '2024-05-15 09:00:00', '2024-05-15 10:15:00', 2),
-(7004, 1003, 103, 'ER',         '2024-06-12 23:45:00', '2024-06-13 06:30:00', 3);
+-- DIAGNOSES
+INSERT INTO diagnoses
+SELECT gs, 'D'||lpad(gs::text,5,'0'), 'Diagnosis '||gs
+FROM generate_series(1,10000) gs;
 
-INSERT INTO encounter_diagnoses VALUES
-(8001, 7001, 3001, 1),
-(8002, 7001, 3002, 2),
-(8003, 7002, 3001, 1),
-(8004, 7002, 3003, 2),
-(8005, 7003, 3002, 1),
-(8006, 7004, 3001, 1);
+-- ENCOUNTER_DIAGNOSES
+INSERT INTO encounter_diagnoses
+SELECT gs, (random()*9999)::int + 1, (random()*9999)::int + 1, (random()*3)::int + 1
+FROM generate_series(1,10000) gs;
 
-INSERT INTO encounter_procedures VALUES
-(9001, 7001, 4001, '2024-05-10'),
-(9002, 7001, 4002, '2024-05-10'),
-(9003, 7002, 4001, '2024-06-02'),
-(9004, 7003, 4001, '2024-05-15');
+-- PROCEDURES
+INSERT INTO procedures
+SELECT gs, 'P'||lpad(gs::text,5,'0'), 'Procedure '||gs
+FROM generate_series(1,10000) gs;
 
-INSERT INTO billing VALUES
-(14001, 7001,  350.00,   280.00, '2024-05-11', 'Paid'),
-(14002, 7002, 12500.00, 10000.00, '2024-06-08', 'Paid');
+
+-- ENCOUNTER_PROCEDURES
+INSERT INTO encounter_procedures
+SELECT gs, (random()*9999)::int + 1, (random()*9999)::int + 1, date '2023-01-01' + (random()*730)::int
+FROM generate_series(1,10000) gs;
+
+-- BILLING
+INSERT INTO billing
+SELECT gs, (random()*9999)::int + 1, round((50+random()*10000)::numeric,2), round((20+random()*8000)::numeric,2),
+  date '2023-01-01' + (random()*730)::int, (ARRAY['Paid','Denied','Pending'])[ (random()*2)::int + 1 ]
+FROM generate_series(1,10000) gs;
 
 
 --======================================================
--- TEST RUNS
+-- TEST RUNS & ANALYSIS
 --======================================================
+-- Question 1
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT
+  date_trunc('month', e.encounter_date)::date AS month_start,
+  s.specialty_name,
+  e.encounter_type,
+  COUNT(*) AS total_encounters,
+  COUNT(DISTINCT e.patient_id) AS unique_patients
+FROM encounters e
+JOIN providers p   ON p.provider_id = e.provider_id
+JOIN specialties s ON s.specialty_id = p.specialty_id
+GROUP BY
+  date_trunc('month', e.encounter_date)::date,
+  s.specialty_name,
+  e.encounter_type
+ORDER BY
+  month_start, s.specialty_name, e.encounter_type;

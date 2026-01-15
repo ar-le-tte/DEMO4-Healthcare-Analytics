@@ -1,0 +1,40 @@
+QUESTION 1: Monthly Encounters by Specialty
+
+SQL Query:
+SELECT
+  date_trunc('month', e.encounter_date)::date AS month_start,
+  s.specialty_name,
+  e.encounter_type,
+  COUNT(*) AS total_encounters,
+  COUNT(DISTINCT e.patient_id) AS unique_patients
+FROM encounters e
+JOIN providers p   ON p.provider_id = e.provider_id
+JOIN specialties s ON s.specialty_id = p.specialty_id
+GROUP BY
+  date_trunc('month', e.encounter_date)::date,
+  s.specialty_name,
+  e.encounter_type
+ORDER BY
+  month_start, s.specialty_name, e.encounter_type;
+
+Schema Analysis:
+Tables joined: encounters, providers, specialties  
+Number of joins: 2
+
+Performance:
+Execution time: 32.795 ms
+Estimated rows scanned (approx): 30,000 rows in sequential scans
+- encounters: 10,000 rows 
+- providers: 10,000 rows 
+- specialties: 10,000 rows 
+
+Buffers: shared hit = 348. Good news since no disk was needed for 348 memory pages read.
+Rows returned: 9,836 groups
+
+Bottleneck Identified:
+The query is slower at scale because specialty information is not stored in the encounters table, so the database must first execute a join chain
+(encounters → providers → specialties) before performing the aggregation.
+The execution plan shows two Hash Joins, followed by a Sort and GroupAggregate.
+The COUNT(DISTINCT patient_id) forces additional work (the Sort includes patient_id), and the GROUP BY is on a computed month key (date_trunc),
+which increases sorting/aggregation cost. In a normalized OLTP schema, this join-then-aggregate pattern creates large intermediate results and
+makes monthly reporting queries more expensive as data grows.
