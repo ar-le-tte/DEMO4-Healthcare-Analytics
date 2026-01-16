@@ -4,6 +4,7 @@
 Let us document the design choices to make when transforming the normalized OLTP healthcare database into a dimensional (star) schema optimized for analytical workloads and solving the performance shortcomings of the first schema. 
 The decisions are directly informed by the performance issues observed in the OLTP queries in Part 2 (found in query_analysis.txt).
 
+Through out we kept the OLTP ids, to trace-back to the old schema.
 ---
 Decision 1: Fact Table Grain
 
