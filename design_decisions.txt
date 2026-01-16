@@ -1,0 +1,135 @@
+3.1 – Star Schema Design Decisions
+=======================================
+
+Let us document the design choices to make when transforming the normalized OLTP healthcare database into a dimensional (star) schema optimized for analytical workloads and solving the performance shortcomings of the first schema. 
+The decisions are directly informed by the performance issues observed in the OLTP queries in Part 2 (found in query_analysis.txt).
+
+---
+Decision 1: Fact Table Grain
+
+Chosen option: One row per encounter. This will have all the details needed for said encounter.
+
+Reasoning:
+The primary analytical questions of the OLTP schema focus on encounters as the central business event: monthly encounter volumes, readmissions, revenue attribution, and clinical activity summaries. Defining the fact table grain as one row per encounter provides a stable and intuitive foundation for these analyses.
+
+This grain supports:
+- Aggregation of encounters by time, specialty, and encounter type (Questions 1 and 4),
+- Readmission analysis through self-joins on encounters (Question 3),
+- Revenue analysis by summarizing billing data at the encounter level.
+
+More granular options (one row per diagnosis or per procedure) would significantly increase the size of the fact table, complicate readmission logic, and introduce unnecessary duplication for queries that do not require that level of detail. 
+Instead, we can handle the detailed clinical coding through bridge tables.
+
+---
+Decision 2: Dimension Tables
+
+We require the creation of the following dimension tables to better describe encounters and enable efficient slicing and dicing of the data.
+
+We introduced surrogate keys on tables with a purpose to avoid errors when ids change, and to better link tables efficiently.
+
+1. Date Dimension (dim_date)
+   - date_key (surrogate key, YYYYMMDD)
+   - calendar_date
+   - year
+   - quarter
+   - month_number
+   - month_name
+   - day_of_week
+   - week_of_year
+   - is_weekend
+
+   Reasoning:
+   Time-based analysis appears in every analytical question. A date dimension avoids repeated date computations (e.g., date_trunc) and improves our query readability and performance.
+
+2. Patient Dimension (dim_patient)
+   - patient_key (surrogate key)
+   - patient_id (natural key)
+   - MRN
+   - gender
+   - date_of_birth
+   - age
+   - age_group
+
+   Reasoning:
+   Patient attributes are frequently used for distinct counts and cohort analysis. Deriving age and age groups during ETL avoids repeated calculations at query time.
+
+3. Provider Dimension (dim_provider)
+   - provider_key
+   - provider_id
+   - provider_name
+   - credential
+
+   Reasonig:
+   Providers are important for clinical attribution and future analyses, while keeping specialty as a separate dimension avoids redundancy.
+
+4. Specialty Dimension (dim_specialty)
+   - specialty_key
+   - specialty_id
+   - specialty_name
+   - specialty_code
+
+   Reasoning:
+   Specialty is a core analytical attribute used in all four business questions and should be directly accessible from the fact table.
+
+5. Department Dimension (dim_department)
+   - department_key
+   - department_id
+   - department_name
+   - floor
+   - capacity
+
+   Reasoning:
+   Departments provide organizational and operational context and may be used for capacity or utilization analysis.
+
+6. Encounter Type Dimension (dim_encounter_type)
+   - encounter_type_key
+   - encounter_type_name (Inpatient, Outpatient, ER)
+
+   Reasoning:
+   Normalizing encounter type into a dimension simplifies filtering and grouping while maintaining consistency.
+
+7. Diagnosis Dimension (dim_diagnosis)
+   - diagnosis_key
+   - diagnosis_id
+   - ICD-10 code
+   - diagnosis_description
+
+8. Procedure Dimension (dim_procedure)
+   - procedure_key
+   - procedure_id
+   - CPT code
+   - procedure_description
+
+   Reasoning:
+   Diagnoses and procedures can be reused across many encounters and are best modeled as shared dimensions linked through bridge tables.
+
+---
+Decision 3: Pre-Aggregated Metrics in the Fact Table
+
+Now for the fact table in decision 1 (fact_encounters), the following metrics are stored directly:
+
+- diagnosis_count (number of diagnoses per encounter)
+- procedure_count (number of procedures per encounter)
+- total_allowed_amount (sum of allowed billing amounts per encounter)
+- total_claim_amount
+- length_of_stay (derived from encounter and discharge timestamps)
+
+Reasoning and Justification:
+In the OLTP schema, these metrics required joining multiple tables and performing aggregations at query time, which led to poor performance. Pre-aggregating them during ETL:
+- Reduces join depth in analytical queries,
+- Eliminates repeated aggregation work,
+- Makes common queries significantly faster and simpler.
+
+----
+Decision 4: Bridge Tables for Many-to-Many Relationships
+
+Bridge tables are used for:
+- Encounter–Diagnosis relationships
+- Encounter–Procedure relationships
+
+Reasoning:
+We kept the two bridge tables because encounters can have multiple diagnoses and procedures, and each diagnosis or procedure can appear in many encounters. Denormalizing this information directly into the fact table would either:
+- Change the grain of the fact table, or
+- Introduce excessive duplication and sparsity.
+
+Using bridge tables preserves the one-row-per-encounter grain while still allowing detailed clinical analyses (such as diagnosis–procedure pairing) when required. This approach balances performance and flexibility and aligns with standard dimensional modeling best practices.
