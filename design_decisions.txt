@@ -35,6 +35,7 @@ We introduced surrogate keys on tables with a purpose to avoid errors when ids c
    - quarter
    - month_number
    - month_name
+   - day_of_month
    - day_of_week
    - week_of_year
    - is_weekend
@@ -46,6 +47,8 @@ We introduced surrogate keys on tables with a purpose to avoid errors when ids c
    - patient_key (surrogate key)
    - patient_id (natural key)
    - MRN
+   - first_name
+   - last_name
    - gender
    - date_of_birth
    - age
@@ -61,7 +64,7 @@ We introduced surrogate keys on tables with a purpose to avoid errors when ids c
    - credential
 
    Reasonig:
-   Providers are important for clinical attribution and future analyses, while keeping specialty as a separate dimension avoids redundancy.
+   Providers are important for clinical attribution and future analyses, while keeping specialty as a separate dimension avoids redundancy and snowflaking.
 
 4. Specialty Dimension (dim_specialty)
    - specialty_key
@@ -113,7 +116,7 @@ Now for the fact table in decision 1 (fact_encounters), the following metrics ar
 - procedure_count (number of procedures per encounter)
 - total_allowed_amount (sum of allowed billing amounts per encounter)
 - total_claim_amount
-- length_of_stay (derived from encounter and discharge timestamps)
+- length_of_stay_days (derived from encounter and discharge timestamps)
 
 Reasoning and Justification:
 In the OLTP schema, these metrics required joining multiple tables and performing aggregations at query time, which led to poor performance. Pre-aggregating them during ETL:
