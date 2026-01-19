@@ -144,7 +144,30 @@ ON bridge_encounter_procedures(procedure_key);
 CREATE INDEX IF NOT EXISTS ix_bridge_enc_proc_fact
 ON bridge_encounter_procedures(fact_encounter_key);
 
--- 4) Let us seed encounter types 
+-- Let us Populate the Tables with Data from the old OLTP tables:
+
+--Encounter Types
 INSERT INTO dim_encounter_type (encounter_type_name)
-VALUES ('Outpatient'), ('Inpatient'), ('ER')
-ON CONFLICT (encounter_type_name) DO NOTHING;
+VALUES ('Outpatient'), ('Inpatient'), ('ER');
+
+--Dates
+WITH bounds AS (SELECT LEAST((SELECT MIN(encounter_date::date) FROM public.encounters),
+      (SELECT MIN(discharge_date::date) FROM public.encounters WHERE discharge_date IS NOT NULL),
+      (SELECT MIN(claim_date) FROM public.billing), (SELECT MIN(procedure_date) FROM public.encounter_procedures)) AS min_d,
+    GREATEST((SELECT MAX(encounter_date::date) FROM public.encounters),
+      (SELECT MAX(discharge_date::date) FROM public.encounters WHERE discharge_date IS NOT NULL),(SELECT MAX(claim_date) FROM public.billing),
+      (SELECT MAX(procedure_date) FROM public.encounter_procedures)) AS max_d),
+dates AS (SELECT generate_series(min_d, max_d, interval '1 day')::date AS d
+  FROM bounds)
+INSERT INTO star.dim_date (date_key, calendar_date, year, quarter, month_number, month_name,
+  day_of_month, day_of_week, week_of_year, is_weekend)
+SELECT
+  (to_char(d, 'YYYYMMDD'))::int AS date_key, d AS calendar_date, EXTRACT(YEAR FROM d)::smallint AS year,
+  EXTRACT(QUARTER FROM d)::smallint AS quarter, EXTRACT(MONTH FROM d)::smallint AS month_number,
+  to_char(d, 'Mon') AS month_name, EXTRACT(DAY FROM d)::smallint AS day_of_month,
+  EXTRACT(ISODOW FROM d)::smallint AS day_of_week, EXTRACT(WEEK FROM d)::smallint AS week_of_year,
+  (EXTRACT(ISODOW FROM d) IN (6,7)) AS is_weekend
+FROM dates
+ON CONFLICT (date_key) DO NOTHING;
+
+
