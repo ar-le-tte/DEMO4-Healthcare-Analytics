@@ -106,7 +106,7 @@ CREATE INDEX IF NOT EXISTS ix_fact_encounters_enc_date
 ON fact_encounters(encounter_date_key);
 
 CREATE INDEX IF NOT EXISTS ix_fact_q1
-ON star.fact_encounters (encounter_date_key, specialty_key, encounter_type_key, patient_key);
+ON fact_encounters (encounter_date_key, specialty_key, encounter_type_key, patient_key);
 
 CREATE INDEX IF NOT EXISTS ix_fact_encounters_specialty_date
 ON fact_encounters(specialty_key, encounter_date_key);
@@ -261,9 +261,9 @@ ON CONFLICT DO NOTHING;
 
 ----
 SELECT count(*) FROM dim_date;
-ANALYZE star.bridge_encounter_diagnoses;
-ANALYZE star.bridge_encounter_procedures;
-ANALYZE star.fact_encounters;
+ANALYZE bridge_encounter_diagnoses;
+ANALYZE bridge_encounter_procedures;
+ANALYZE fact_encounters;
 ----
 
 -- Let us calculate a pre-aggregated table to simple calculations and minimize joins
@@ -280,7 +280,7 @@ GROUP BY bd.diagnosis_key, bp.procedure_key;
 CREATE INDEX ON fact_diag_proc_pairs (encounter_count DESC);
 CREATE INDEX ON fact_diag_proc_pairs (diagnosis_key, procedure_key);
 
-ANALYZE star.fact_diag_proc_pairs;
+ANALYZE fact_diag_proc_pairs;
 
 
 -- Query Test Runs:
@@ -303,11 +303,42 @@ ORDER BY
 
 EXPLAIN (ANALYZE)
 SELECT d.icd10_code, p.cpt_code, fp.encounter_count
-FROM star.fact_diag_proc_pairs fp
-JOIN star.dim_diagnosis d ON d.diagnosis_key = fp.diagnosis_key
-JOIN star.dim_procedure p ON p.procedure_key = fp.procedure_key
+FROM fact_diag_proc_pairs fp
+JOIN dim_diagnosis d ON d.diagnosis_key = fp.diagnosis_key
+JOIN dim_procedure p ON p.procedure_key = fp.procedure_key
 ORDER BY fp.encounter_count DESC
 LIMIT 20;
+
+--Qn3. Day Readmission Rate by Specialty
+
+EXPLAIN (ANALYZE)
+SELECT s.specialty_name,
+  COUNT(DISTINCT f1.encounter_id) AS inpatient_discharges,
+  COUNT(DISTINCT f1.encounter_id) FILTER (
+    WHERE f2.fact_encounter_key IS NOT NULL
+  ) AS readmissions, ROUND(COUNT(DISTINCT f1.encounter_id) FILTER (WHERE f2.fact_encounter_key IS NOT NULL)::numeric
+    / NULLIF(COUNT(DISTINCT f1.encounter_id), 0),4) AS readmission_rate
+FROM star.fact_encounters f1
+JOIN star.dim_encounter_type et ON et.encounter_type_key = f1.encounter_type_key
+JOIN star.dim_specialty s ON s.specialty_key = f1.specialty_key
+LEFT JOIN LATERAL (SELECT f2.fact_encounter_key
+  FROM star.fact_encounters f2
+  WHERE f2.patient_key = f1.patient_key
+    AND f2.encounter_date_key > f1.discharge_date_key
+    AND f2.encounter_date_key <= (
+      SELECT dc.date_key
+      FROM star.dim_date dd
+      JOIN star.dim_date dc ON dc.calendar_date = dd.calendar_date + INTERVAL '30 days'
+      WHERE dd.date_key = f1.discharge_date_key)
+  ORDER BY f2.encounter_date_key
+  LIMIT 1) f2 ON TRUE
+WHERE et.encounter_type_name = 'Inpatient'
+  AND f1.discharge_date_key IS NOT NULL
+GROUP BY s.specialty_name
+ORDER BY readmission_rate DESC;
+
+
+
 
 
 
