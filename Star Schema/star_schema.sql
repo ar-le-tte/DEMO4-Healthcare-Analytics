@@ -144,139 +144,124 @@ ON bridge_encounter_procedures(procedure_key);
 CREATE INDEX IF NOT EXISTS ix_bridge_enc_proc_fact
 ON bridge_encounter_procedures(fact_encounter_key);
 
--- Let us Populate the Tables with Data from the old OLTP tables:
+-- Let us Populate the Tables
+
+--For Repopulation
+TRUNCATE TABLE
+  bridge_encounter_procedures,
+  bridge_encounter_diagnoses,
+  fact_encounters,
+  dim_procedure,
+  dim_diagnosis,
+  dim_encounter_type,
+  dim_provider,
+  dim_department,
+  dim_specialty,
+  dim_patient,
+  dim_date
+RESTART IDENTITY CASCADE;
 
 -- Encounter Types
 INSERT INTO dim_encounter_type (encounter_type_name)
 VALUES ('Outpatient'), ('Inpatient'), ('ER')
 ON CONFLICT (encounter_type_name) DO NOTHING;
 
+-- Specialty
+INSERT INTO dim_specialty (specialty_id, specialty_name, specialty_code)
+SELECT gs AS specialty_id, 'Specialty ' || gs AS specialty_name, 'SP' || lpad(gs::text, 3, '0') AS specialty_code
+FROM generate_series(1, 25) gs;
+
+-- Department
+INSERT INTO dim_department (department_id, department_name, floor, capacity)
+SELECT gs AS department_id, 'Department ' || gs AS department_name,  (1 + (random()*5)::int)::smallint AS floor,
+  (10 + (random()*60)::int) AS capacity
+FROM generate_series(1, 30) gs;
+
+-- Provider
+INSERT INTO dim_provider (provider_id, first_name, last_name, provider_name, credential)
+SELECT gs AS provider_id, 'ProvFirst' || gs, 'ProvLast' || gs, 'ProvFirst' || gs || ' ' || 'ProvLast' || gs, (ARRAY['MD','RN','DO','PA'])[1 + (random()*3)::int]
+FROM generate_series(1, 500) gs;
+
+-- Patient
+INSERT INTO dim_patient (patient_id, mrn, first_name, last_name, date_of_birth, gender, age_years, age_group)
+SELECT gs AS patient_id, 'MRN' || lpad(gs::text, 6, '0') AS mrn, 'PatFirst' || gs, 'PatLast' || gs,
+  (DATE '1950-01-01' + (random()*25000)::int) AS date_of_birth, (CASE WHEN random() < 0.5 THEN 'M' ELSE 'F' END)::char(1) AS gender,
+  EXTRACT(YEAR FROM age(current_date, (DATE '1950-01-01' + (random()*25000)::int)))::int AS age_years, 'unknown'::varchar(20) AS age_group
+FROM generate_series(1, 5000) gs;
+UPDATE dim_patient
+SET age_group = CASE
+  WHEN age_years < 18 THEN '0-17'
+  WHEN age_years < 35 THEN '18-34'
+  WHEN age_years < 50 THEN '35-49'
+  WHEN age_years < 65 THEN '50-64'
+  ELSE '65+'
+END;
+
+-- Diagnosis
+INSERT INTO dim_diagnosis (diagnosis_id, icd10_code, icd10_description)
+SELECT gs AS diagnosis_id, 'D' || lpad(gs::text, 4, '0') AS icd10_code, 'Diagnosis ' || gs AS icd10_description
+FROM generate_series(1, 500) gs;
+
+-- Procedure
+INSERT INTO dim_procedure (procedure_id, cpt_code, cpt_description)
+SELECT gs AS procedure_id, 'P' || lpad(gs::text, 4, '0') AS cpt_code, 'Procedure ' || gs AS cpt_description
+FROM generate_series(1, 300) gs;
+
 -- Dates
-WITH bounds AS (SELECT LEAST((SELECT MIN(encounter_date::date) FROM public.encounters),
-      (SELECT MIN(discharge_date::date) FROM public.encounters WHERE discharge_date IS NOT NULL),
-      (SELECT MIN(claim_date) FROM public.billing), (SELECT MIN(procedure_date) FROM public.encounter_procedures)) AS min_d,
-    GREATEST((SELECT MAX(encounter_date::date) FROM public.encounters),
-      (SELECT MAX(discharge_date::date) FROM public.encounters WHERE discharge_date IS NOT NULL),(SELECT MAX(claim_date) FROM public.billing),
-      (SELECT MAX(procedure_date) FROM public.encounter_procedures)) AS max_d),
-dates AS (SELECT generate_series(min_d, max_d, interval '1 day')::date AS d
-  FROM bounds)
-INSERT INTO star.dim_date (date_key, calendar_date, year, quarter, month_number, month_name,
-  day_of_month, day_of_week, week_of_year, is_weekend)
-SELECT
-  (to_char(d, 'YYYYMMDD'))::int AS date_key, d AS calendar_date, EXTRACT(YEAR FROM d)::smallint AS year,
-  EXTRACT(QUARTER FROM d)::smallint AS quarter, EXTRACT(MONTH FROM d)::smallint AS month_number,
-  to_char(d, 'Mon') AS month_name, EXTRACT(DAY FROM d)::smallint AS day_of_month,
-  EXTRACT(ISODOW FROM d)::smallint AS day_of_week, EXTRACT(WEEK FROM d)::smallint AS week_of_year,
-  (EXTRACT(ISODOW FROM d) IN (6,7)) AS is_weekend
+WITH dates AS ( SELECT generate_series(DATE '2023-01-01', DATE '2024-12-31', interval '1 day')::date AS d)
+INSERT INTO dim_date ( date_key, calendar_date, year, quarter, month_number, month_name, day_of_month, day_of_week, week_of_year, is_weekend)
+SELECT (to_char(d, 'YYYYMMDD'))::int, d, EXTRACT(YEAR FROM d)::smallint, EXTRACT(QUARTER FROM d)::smallint, EXTRACT(MONTH FROM d)::smallint,
+  to_char(d, 'Mon'), EXTRACT(DAY FROM d)::smallint, EXTRACT(ISODOW FROM d)::smallint, EXTRACT(WEEK FROM d)::smallint, (EXTRACT(ISODOW FROM d) IN (6,7))
 FROM dates
 ON CONFLICT (date_key) DO NOTHING;
 
--- Specialty
-INSERT INTO star.dim_specialty (specialty_id, specialty_name, specialty_code)
-SELECT specialty_id, specialty_name, specialty_code
-FROM public.specialties
-ON CONFLICT (specialty_id) DO NOTHING;
-
--- Department
-INSERT INTO star.dim_department (department_id, department_name, floor, capacity)
-SELECT department_id, department_name, floor, capacity
-FROM public.departments
-ON CONFLICT (department_id) DO NOTHING;
-
--- Provider
-INSERT INTO star.dim_provider (provider_id, first_name, last_name, provider_name, credential)
-SELECT provider_id, first_name, last_name, first_name || ' ' || last_name AS provider_name, credential
-FROM public.providers
-ON CONFLICT (provider_id) DO NOTHING;
-
--- Patient
-INSERT INTO star.dim_patient (patient_id, mrn, first_name, last_name, date_of_birth, gender, age_years, age_group)
-SELECT p.patient_id, p.mrn, p.first_name, p.last_name, p.date_of_birth, p.gender,
-  EXTRACT(YEAR FROM age(current_date, p.date_of_birth))::int AS age_years,
-  CASE
-    WHEN EXTRACT(YEAR FROM age(current_date, p.date_of_birth)) < 18 THEN '0-17'
-    WHEN EXTRACT(YEAR FROM age(current_date, p.date_of_birth)) < 35 THEN '18-34'
-    WHEN EXTRACT(YEAR FROM age(current_date, p.date_of_birth)) < 50 THEN '35-49'
-    WHEN EXTRACT(YEAR FROM age(current_date, p.date_of_birth)) < 65 THEN '50-64'
-    ELSE '65+'
-  END AS age_group
-FROM public.patients p
-ON CONFLICT (patient_id) DO NOTHING;
-
--- Diagnosis
-INSERT INTO star.dim_diagnosis (diagnosis_id, icd10_code, icd10_description)
-SELECT diagnosis_id, icd10_code, icd10_description
-FROM public.diagnoses
-ON CONFLICT (diagnosis_id) DO NOTHING;
-
--- Procedure
-INSERT INTO star.dim_procedure (procedure_id, cpt_code, cpt_description)
-SELECT procedure_id, cpt_code, cpt_description
-FROM public.procedures
-ON CONFLICT (procedure_id) DO NOTHING;
-
 -- Fact Table:
-WITH diag AS ( SELECT encounter_id, COUNT(*)::int AS diagnosis_count
-  FROM public.encounter_diagnoses
-  GROUP BY encounter_id),
-proc AS ( SELECT encounter_id, COUNT(*)::int AS procedure_count
-  FROM public.encounter_procedures
-  GROUP BY encounter_id),
-bill AS ( SELECT encounter_id, COALESCE(SUM(claim_amount), 0)::numeric(12,2) AS total_claim_amount,
-    COALESCE(SUM(allowed_amount), 0)::numeric(12,2) AS total_allowed_amount, (COUNT(*) > 0) AS has_billing
-  FROM public.billing
-  GROUP BY encounter_id)
-INSERT INTO star.fact_encounters ( encounter_id, encounter_date_key, discharge_date_key, patient_key, provider_key,
-  specialty_key, department_key, encounter_type_key, diagnosis_count, procedure_count, total_claim_amount,
-  total_allowed_amount, length_of_stay_days, has_billing)
-SELECT e.encounter_id,
-  (to_char(e.encounter_date::date, 'YYYYMMDD'))::int AS encounter_date_key,
-  CASE
-    WHEN e.discharge_date IS NULL THEN NULL
-    ELSE (to_char(e.discharge_date::date, 'YYYYMMDD'))::int
-  END AS discharge_date_key,
-  dp.patient_key, dprov.provider_key, dspec.specialty_key, ddept.department_key, det.encounter_type_key,
-  COALESCE(dg.diagnosis_count, 0) AS diagnosis_count,
-  COALESCE(pr.procedure_count, 0) AS procedure_count,
-  COALESCE(bl.total_claim_amount, 0.00) AS total_claim_amount,
-  COALESCE(bl.total_allowed_amount, 0.00) AS total_allowed_amount,
-
-  GREATEST(
-    0,
-    COALESCE((e.discharge_date::date - e.encounter_date::date), 0)
-  )::int AS length_of_stay_days,
-
-  COALESCE(bl.has_billing, FALSE) AS has_billing
-FROM public.encounters e
-JOIN star.dim_patient dp ON dp.patient_id = e.patient_id
-JOIN star.dim_provider dprov ON dprov.provider_id = e.provider_id
-JOIN public.providers p ON p.provider_id = e.provider_id
-JOIN star.dim_specialty dspec ON dspec.specialty_id = p.specialty_id
-JOIN star.dim_department ddept ON ddept.department_id = e.department_id
-JOIN star.dim_encounter_type det ON det.encounter_type_name = e.encounter_type
-LEFT JOIN diag dg ON dg.encounter_id = e.encounter_id
-LEFT JOIN proc pr ON pr.encounter_id = e.encounter_id
-LEFT JOIN bill bl ON bl.encounter_id = e.encounter_id
-ON CONFLICT (encounter_id) DO NOTHING;
+WITH et AS ( SELECT encounter_type_key, encounter_type_name FROM dim_encounter_type),
+rand_rows AS ( SELECT gs AS encounter_id, (SELECT patient_key FROM dim_patient ORDER BY random() LIMIT 1) AS patient_key,
+    (SELECT provider_key FROM dim_provider ORDER BY random() LIMIT 1) AS provider_key,
+    (SELECT specialty_key FROM dim_specialty ORDER BY random() LIMIT 1) AS specialty_key,
+    (SELECT department_key FROM dim_department ORDER BY random() LIMIT 1) AS department_key,
+    (SELECT encounter_type_key FROM et ORDER BY random() LIMIT 1) AS encounter_type_key,
+    (SELECT date_key FROM dim_date ORDER BY random() LIMIT 1) AS encounter_date_key
+  FROM generate_series(1, 10000) gs),
+with_discharge AS ( SELECT r.*,  CASE
+      WHEN (SELECT encounter_type_name FROM et WHERE et.encounter_type_key = r.encounter_type_key) = 'Outpatient'
+        THEN r.encounter_date_key
+      WHEN (SELECT encounter_type_name FROM et WHERE et.encounter_type_key = r.encounter_type_key) = 'ER'
+        THEN r.encounter_date_key
+      ELSE r.encounter_date_key
+    END AS discharge_date_key
+  FROM rand_rows r
+)
+INSERT INTO fact_encounters ( encounter_id, encounter_date_key, discharge_date_key, patient_key, provider_key, specialty_key, department_key,
+  encounter_type_key, diagnosis_count, procedure_count, total_claim_amount, total_allowed_amount, length_of_stay_days, has_billing)
+SELECT encounter_id, encounter_date_key, discharge_date_key, patient_key, provider_key, specialty_key, department_key, encounter_type_key,
+  (1 + (random()*3)::int) AS diagnosis_count, (1 + (random()*2)::int) AS procedure_count, round((50 + random()*15000)::numeric, 2) AS total_claim_amount,
+  round((40 + random()*12000)::numeric, 2) AS total_allowed_amount, (random()*10)::int AS length_of_stay_days, (random() < 0.7) AS has_billing
+FROM with_discharge;
 
 -- Bridge Tables
 
 -- encounter_diagnoses
-INSERT INTO star.bridge_encounter_diagnoses (fact_encounter_key, diagnosis_key, diagnosis_sequence)
-SELECT f.fact_encounter_key, dd.diagnosis_key, ed.diagnosis_sequence
-FROM public.encounter_diagnoses ed
-JOIN star.fact_encounters f ON f.encounter_id = ed.encounter_id
-JOIN star.dim_diagnosis dd ON dd.diagnosis_id = ed.diagnosis_id
+INSERT INTO bridge_encounter_diagnoses (fact_encounter_key, diagnosis_key, diagnosis_sequence)
+SELECT f.fact_encounter_key, (SELECT diagnosis_key FROM dim_diagnosis ORDER BY random() LIMIT 1) AS diagnosis_key,
+  gs AS diagnosis_sequence
+FROM fact_encounters f
+JOIN LATERAL generate_series(1, GREATEST(f.diagnosis_count,1)) gs ON TRUE
 ON CONFLICT DO NOTHING;
 
 -- encounter_procedures
-INSERT INTO star.bridge_encounter_procedures (fact_encounter_key, procedure_key, procedure_date_key)
-SELECT f.fact_encounter_key, dp.procedure_key, (to_char(ep.procedure_date, 'YYYYMMDD'))::int AS procedure_date_key
-FROM public.encounter_procedures ep
-JOIN star.fact_encounters f ON f.encounter_id = ep.encounter_id
-JOIN star.dim_procedure dp ON dp.procedure_id = ep.procedure_id
+INSERT INTO bridge_encounter_procedures (fact_encounter_key, procedure_key, procedure_date_key)
+SELECT f.fact_encounter_key, (SELECT procedure_key FROM dim_procedure ORDER BY random() LIMIT 1) AS procedure_key, f.encounter_date_key
+FROM fact_encounters f
+JOIN LATERAL generate_series(1, GREATEST(f.procedure_count,1)) gs ON TRUE
 ON CONFLICT DO NOTHING;
 
-SELECT count(*) FROM bridge_encounter_procedures;
+SELECT count(*) FROM fact_encounters;
+
+-- Query Test Runs:
+
+
+
 
 
