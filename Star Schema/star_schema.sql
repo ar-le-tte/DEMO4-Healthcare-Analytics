@@ -105,6 +105,9 @@ CREATE TABLE IF NOT EXISTS fact_encounters (
 CREATE INDEX IF NOT EXISTS ix_fact_encounters_enc_date
 ON fact_encounters(encounter_date_key);
 
+CREATE INDEX IF NOT EXISTS ix_fact_q1
+ON star.fact_encounters (encounter_date_key, specialty_key, encounter_type_key, patient_key);
+
 CREATE INDEX IF NOT EXISTS ix_fact_encounters_specialty_date
 ON fact_encounters(specialty_key, encounter_date_key);
 
@@ -147,9 +150,8 @@ ON bridge_encounter_procedures(fact_encounter_key);
 -- Let us Populate the Tables
 
 --For Repopulation
+
 TRUNCATE TABLE
-  bridge_encounter_procedures,
-  bridge_encounter_diagnoses,
   fact_encounters,
   dim_procedure,
   dim_diagnosis,
@@ -257,7 +259,29 @@ FROM fact_encounters f
 JOIN LATERAL generate_series(1, GREATEST(f.procedure_count,1)) gs ON TRUE
 ON CONFLICT DO NOTHING;
 
+----
 SELECT count(*) FROM dim_date;
+ANALYZE star.bridge_encounter_diagnoses;
+ANALYZE star.bridge_encounter_procedures;
+ANALYZE star.fact_encounters;
+----
+
+-- Let us calculate a pre-aggregated table to simple calculations and minimize joins
+CREATE TABLE fact_diag_proc_pairs AS
+SELECT
+  bd.diagnosis_key,
+  bp.procedure_key,
+  COUNT(DISTINCT bd.fact_encounter_key) AS encounter_count
+FROM bridge_encounter_diagnoses bd
+JOIN bridge_encounter_procedures bp
+  ON bp.fact_encounter_key = bd.fact_encounter_key
+GROUP BY bd.diagnosis_key, bp.procedure_key;
+
+CREATE INDEX ON fact_diag_proc_pairs (encounter_count DESC);
+CREATE INDEX ON fact_diag_proc_pairs (diagnosis_key, procedure_key);
+
+ANALYZE star.fact_diag_proc_pairs;
+
 
 -- Query Test Runs:
 
@@ -276,6 +300,14 @@ ORDER BY
   d.year, d.month_number, s.specialty_name, et.encounter_type_name;
 
 --Qn2. Monthly Encounters by Specialty
+
+EXPLAIN (ANALYZE)
+SELECT d.icd10_code, p.cpt_code, fp.encounter_count
+FROM star.fact_diag_proc_pairs fp
+JOIN star.dim_diagnosis d ON d.diagnosis_key = fp.diagnosis_key
+JOIN star.dim_procedure p ON p.procedure_key = fp.procedure_key
+ORDER BY fp.encounter_count DESC
+LIMIT 20;
 
 
 

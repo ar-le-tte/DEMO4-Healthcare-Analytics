@@ -17,14 +17,36 @@ ORDER BY
   d.year, d.month_number, s.specialty_name, et.encounter_type_name;
 
 Execution time estimate:
-- Star schema: 19.868 ms
+- Star schema: 11.009 ms
 - OLTP schema: 32.795 ms
 
 Improvement factor:
-32.795 / 19.868 ≈ 1.65x faster
+32.795 / 11.009 ≈ 2.98x faster
 
 Why it’s faster:
 - The fact table already contains the specialty_key and encounter_type_key, so we avoid the OLTP join chain encounters → providers → specialties.
+- The added composite index on fact_encounters helps the planner handle grouping and the COUNT(DISTINCT patient_key) more efficiently, so less time is spent in the sort + aggregate phase.
 - Joins are against small dimensions (25 specialties, 3 encounter types, ~731 dates) using integer keys, which keeps hash joins cheap.
 - The main remaining cost is COUNT(DISTINCT ...) which still forces a sort, but the overall join work is reduced compared to OLTP.
 
+QUERY 2 (Star): Top Diagnosis–Procedure Pairs
+------------------------------------------------------------
+SQL Query:
+SELECT d.icd10_code, p.cpt_code, fp.encounter_count
+FROM star.fact_diag_proc_pairs fp
+JOIN star.dim_diagnosis d ON d.diagnosis_key = fp.diagnosis_key
+JOIN star.dim_procedure p ON p.procedure_key = fp.procedure_key
+ORDER BY fp.encounter_count DESC
+LIMIT 20;
+
+Execution time estimate:
+- Star schema (with a pre-aggregated pairs table): 0.180 ms
+- OLTP schema: 38.073 ms
+
+Improvement factor:
+38.073 / 0.180 ≈ 211.5x faster
+
+Why it’s faster:
+- Instead of joining two junction/bridge tables at query time (which creates a diagnosis_count × procedure_count row explosion per encounter), we precompute the diagnosis–procedure pair counts once into star.fact_diag_proc_pairs.
+- The query becomes a simple lookup + small joins to two dimensions (dim_diagnosis and dim_procedure), followed by an ORDER BY on an already computed metric.
+- This removes the expensive join-and-group work from the query path and makes performance essentially constant-time for reporting.
