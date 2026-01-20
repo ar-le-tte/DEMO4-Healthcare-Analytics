@@ -1,0 +1,30 @@
+Part 3.3 – Star Schema Queries (star_schema_queries.txt)
+=======================================================
+
+QUERY 1 (Star): Monthly Encounters by Specialty
+------------------------------------------------------------
+SQL Query:
+SELECT d.year, d.month_number, d.month_name, s.specialty_name, et.encounter_type_name,
+  COUNT(*) AS total_encounters,
+  COUNT(DISTINCT f.patient_key) AS unique_patients
+FROM fact_encounters f
+JOIN dim_date d ON d.date_key = f.encounter_date_key
+JOIN dim_specialty s ON s.specialty_key = f.specialty_key
+JOIN dim_encounter_type et ON et.encounter_type_key = f.encounter_type_key
+GROUP BY
+  d.year, d.month_number, d.month_name, s.specialty_name, et.encounter_type_name
+ORDER BY
+  d.year, d.month_number, s.specialty_name, et.encounter_type_name;
+
+Execution time estimate:
+- Star schema: 19.868 ms
+- OLTP schema: 32.795 ms
+
+Improvement factor:
+32.795 / 19.868 ≈ 1.65x faster
+
+Why it’s faster:
+- The fact table already contains the specialty_key and encounter_type_key, so we avoid the OLTP join chain encounters → providers → specialties.
+- Joins are against small dimensions (25 specialties, 3 encounter types, ~731 dates) using integer keys, which keeps hash joins cheap.
+- The main remaining cost is COUNT(DISTINCT ...) which still forces a sort, but the overall join work is reduced compared to OLTP.
+

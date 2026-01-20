@@ -257,11 +257,25 @@ FROM fact_encounters f
 JOIN LATERAL generate_series(1, GREATEST(f.procedure_count,1)) gs ON TRUE
 ON CONFLICT DO NOTHING;
 
-SELECT count(*) FROM fact_encounters;
+SELECT count(*) FROM dim_date;
 
 -- Query Test Runs:
 
+--Qn1. Monthly Encounters by Specialty
+EXPLAIN (ANALYZE)
+SELECT d.year, d.month_number, d.month_name, s.specialty_name, et.encounter_type_name,
+  COUNT(*) AS total_encounters,
+  COUNT(DISTINCT f.patient_key) AS unique_patients
+FROM fact_encounters f
+JOIN dim_date d ON d.date_key = f.encounter_date_key
+JOIN dim_specialty s ON s.specialty_key = f.specialty_key
+JOIN dim_encounter_type et ON et.encounter_type_key = f.encounter_type_key
+GROUP BY
+  d.year, d.month_number, d.month_name, s.specialty_name, et.encounter_type_name
+ORDER BY
+  d.year, d.month_number, s.specialty_name, et.encounter_type_name;
 
+--Qn2. Monthly Encounters by Specialty
 
 
 
