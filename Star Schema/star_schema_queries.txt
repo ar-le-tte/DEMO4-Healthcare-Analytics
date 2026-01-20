@@ -1,7 +1,7 @@
 Part 3.3 – Star Schema Queries (star_schema_queries.txt)
 =======================================================
 
-QUERY 1 (Star): Monthly Encounters by Specialty
+QUERY 1: Monthly Encounters by Specialty
 ------------------------------------------------------------
 SQL Query:
 SELECT d.year, d.month_number, d.month_name, s.specialty_name, et.encounter_type_name,
@@ -29,7 +29,7 @@ Why it’s faster:
 - Joins are against small dimensions (25 specialties, 3 encounter types, ~731 dates) using integer keys, which keeps hash joins cheap.
 - The main remaining cost is COUNT(DISTINCT ...) which still forces a sort, but the overall join work is reduced compared to OLTP.
 
-QUERY 2 (Star): Top Diagnosis–Procedure Pairs
+QUERY 2: Top Diagnosis–Procedure Pairs
 ------------------------------------------------------------
 SQL Query:
 SELECT d.icd10_code, p.cpt_code, fp.encounter_count
@@ -51,15 +51,12 @@ Why it’s faster:
 - The query becomes a simple lookup + small joins to two dimensions (dim_diagnosis and dim_procedure), followed by an ORDER BY on an already computed metric.
 - This removes the expensive join-and-group work from the query path and makes performance essentially constant-time for reporting.
 
-QUERY 3 (Star): 30-Day Readmission Rate by Specialty
+QUERY 3: 30-Day Readmission Rate by Specialty
 ------------------------------------------------------------
-QUERY 3: 30-Day Readmission Rate (Star Schema)
-
 SQL Query:
 SELECT s.specialty_name,
   COUNT(DISTINCT f1.encounter_id) AS inpatient_discharges,
-  COUNT(DISTINCT f1.encounter_id) FILTER (
-    WHERE f2.fact_encounter_key IS NOT NULL
+  COUNT(DISTINCT f1.encounter_id) FILTER (WHERE f2.fact_encounter_key IS NOT NULL
 ) AS readmissions, ROUND(COUNT(DISTINCT f1.encounter_id) FILTER (WHERE f2.fact_encounter_key IS NOT NULL)::numeric
     / NULLIF(COUNT(DISTINCT f1.encounter_id), 0),4) AS readmission_rate
 FROM star.fact_encounters f1
@@ -69,8 +66,7 @@ LEFT JOIN LATERAL (SELECT f2.fact_encounter_key
   FROM star.fact_encounters f2
   WHERE f2.patient_key = f1.patient_key
     AND f2.encounter_date_key > f1.discharge_date_key
-    AND f2.encounter_date_key <= (
-      SELECT dc.date_key
+    AND f2.encounter_date_key <= (SELECT dc.date_key
       FROM star.dim_date dd
       JOIN star.dim_date dc ON dc.calendar_date = dd.calendar_date + INTERVAL '30 days'
       WHERE dd.date_key = f1.discharge_date_key)
@@ -93,3 +89,26 @@ Why it’s faster:
 - The star schema keeps patient_key, specialty_key, encounter_date_key, and discharge_date_key directly in the fact table, so we avoid the OLTP join chain.
 - Readmission detection is handled via an index-supported lookup on (patient_key, encounter_date_key), which avoids generating a huge self-join candidate set.
 - The cutoff date (discharge + 30 days) is computed once and reused (memoized), reducing repeated work per inpatient discharge.
+
+QUERY 4: Revenue by Specialty & Month (Star Schema)
+------------------------------------------------------------
+SQL Query:
+SELECT d.year, d.month_number, d.month_name, s.specialty_name, SUM(f.total_allowed_amount) AS total_allowed_amount
+FROM star.fact_encounters f
+JOIN star.dim_date d ON d.date_key = f.encounter_date_key
+JOIN star.dim_specialty s ON s.specialty_key = f.specialty_key
+WHERE f.has_billing = TRUE
+GROUP BY d.year, d.month_number, d.month_name, s.specialty_name
+ORDER BY d.year, d.month_number, total_allowed_amount DESC;
+
+Execution time estimate:
+- Star schema: 5.902 ms
+- OLTP schema: 63.070 ms
+
+Improvement factor:
+63.070 / 5.902 ≈ 10.69x faster
+
+Why it’s faster:
+- In the star schema, billing revenue is already stored in the fact table as total_allowed_amount, so no billing → encounters → providers → specialties join chain is needed.
+- The query only joins the fact table to small dimensions (date + specialty) and then aggregates.
+- This eliminates expensive OLTP-style join-and-aggregate work and reduces intermediate row sizes, so the GROUP BY runs much faster.

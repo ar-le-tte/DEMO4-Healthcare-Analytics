@@ -314,8 +314,7 @@ LIMIT 20;
 EXPLAIN (ANALYZE)
 SELECT s.specialty_name,
   COUNT(DISTINCT f1.encounter_id) AS inpatient_discharges,
-  COUNT(DISTINCT f1.encounter_id) FILTER (
-    WHERE f2.fact_encounter_key IS NOT NULL
+  COUNT(DISTINCT f1.encounter_id) FILTER (WHERE f2.fact_encounter_key IS NOT NULL
   ) AS readmissions, ROUND(COUNT(DISTINCT f1.encounter_id) FILTER (WHERE f2.fact_encounter_key IS NOT NULL)::numeric
     / NULLIF(COUNT(DISTINCT f1.encounter_id), 0),4) AS readmission_rate
 FROM star.fact_encounters f1
@@ -325,8 +324,7 @@ LEFT JOIN LATERAL (SELECT f2.fact_encounter_key
   FROM star.fact_encounters f2
   WHERE f2.patient_key = f1.patient_key
     AND f2.encounter_date_key > f1.discharge_date_key
-    AND f2.encounter_date_key <= (
-      SELECT dc.date_key
+    AND f2.encounter_date_key <= (SELECT dc.date_key
       FROM star.dim_date dd
       JOIN star.dim_date dc ON dc.calendar_date = dd.calendar_date + INTERVAL '30 days'
       WHERE dd.date_key = f1.discharge_date_key)
@@ -336,6 +334,18 @@ WHERE et.encounter_type_name = 'Inpatient'
   AND f1.discharge_date_key IS NOT NULL
 GROUP BY s.specialty_name
 ORDER BY readmission_rate DESC;
+
+--Qn4. Revenue by Specialty & Month
+EXPLAIN (ANALYZE)
+SELECT d.year, d.month_number, d.month_name, s.specialty_name, SUM(f.total_allowed_amount) AS total_allowed_amount
+FROM star.fact_encounters f
+JOIN star.dim_date d ON d.date_key = f.encounter_date_key
+JOIN star.dim_specialty s ON s.specialty_key = f.specialty_key
+WHERE f.has_billing = TRUE
+GROUP BY d.year, d.month_number, d.month_name, s.specialty_name
+ORDER BY d.year, d.month_number, total_allowed_amount DESC;
+
+
 
 
 
