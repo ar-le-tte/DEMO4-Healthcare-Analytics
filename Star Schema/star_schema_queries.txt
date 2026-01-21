@@ -54,26 +54,27 @@ Why it’s faster:
 QUERY 3: 30-Day Readmission Rate by Specialty
 ------------------------------------------------------------
 SQL Query:
-SELECT s.specialty_name,
-  COUNT(DISTINCT f1.encounter_id) AS inpatient_discharges,
-  COUNT(DISTINCT f1.encounter_id) FILTER (WHERE f2.fact_encounter_key IS NOT NULL
-) AS readmissions, ROUND(COUNT(DISTINCT f1.encounter_id) FILTER (WHERE f2.fact_encounter_key IS NOT NULL)::numeric
-    / NULLIF(COUNT(DISTINCT f1.encounter_id), 0),4) AS readmission_rate
-FROM star.fact_encounters f1
-JOIN star.dim_encounter_type et ON et.encounter_type_key = f1.encounter_type_key
-JOIN star.dim_specialty s ON s.specialty_key = f1.specialty_key
-LEFT JOIN LATERAL (SELECT f2.fact_encounter_key
-  FROM star.fact_encounters f2
-  WHERE f2.patient_key = f1.patient_key
-    AND f2.encounter_date_key > f1.discharge_date_key
-    AND f2.encounter_date_key <= (SELECT dc.date_key
-      FROM star.dim_date dd
-      JOIN star.dim_date dc ON dc.calendar_date = dd.calendar_date + INTERVAL '30 days'
-      WHERE dd.date_key = f1.discharge_date_key)
-  ORDER BY f2.encounter_date_key
-  LIMIT 1) f2 ON TRUE
-WHERE et.encounter_type_name = 'Inpatient'
-  AND f1.discharge_date_key IS NOT NULL
+WITH inpatient AS (SELECT f.encounter_id, f.patient_key, f.specialty_key, f.discharge_date_key, dc.date_key AS cutoff_date_key
+  FROM star.fact_encounters f
+  JOIN star.dim_encounter_type et ON et.encounter_type_key = f.encounter_type_key
+  JOIN star.dim_date dd ON dd.date_key = f.discharge_date_key
+  JOIN star.dim_date dc ON dc.calendar_date = dd.calendar_date + INTERVAL '30 days'
+  WHERE et.encounter_type_name = 'Inpatient'
+    AND f.discharge_date_key IS NOT NULL),
+next_within_30 AS (SELECT i.encounter_id, i.specialty_key, (nxt.fact_encounter_key IS NOT NULL) AS is_readmitted
+  FROM inpatient i
+  LEFT JOIN LATERAL (
+    SELECT f2.fact_encounter_key
+    FROM star.fact_encounters f2
+    WHERE f2.patient_key = i.patient_key
+      AND f2.encounter_date_key > i.discharge_date_key
+      AND f2.encounter_date_key <= i.cutoff_date_key
+    ORDER BY f2.encounter_date_key
+    LIMIT 1) nxt ON TRUE)
+SELECT s.specialty_name, COUNT(*) FILTER (WHERE is_readmitted) AS readmissions, COUNT(*) AS inpatient_discharges,
+  ROUND(COUNT(*) FILTER (WHERE is_readmitted)::numeric / NULLIF(COUNT(*),0), 4) AS readmission_rate
+FROM next_within_30 r
+JOIN star.dim_specialty s ON s.specialty_key = r.specialty_key
 GROUP BY s.specialty_name
 ORDER BY readmission_rate DESC;
 
@@ -86,10 +87,9 @@ Improvement factor:
 
 Why it’s faster:
 - The OLTP approach needs a heavy self-join on encounters plus a join chain to providers/specialties.
-- The star schema keeps patient_key, specialty_key, encounter_date_key, and discharge_date_key directly in the fact table, so we avoid the OLTP join chain.
-- Readmission detection is handled via an index-supported lookup on (patient_key, encounter_date_key), which avoids generating a huge self-join candidate set.
-- The cutoff date (discharge + 30 days) is computed once and reused (memoized), reducing repeated work per inpatient discharge.
-
+- In the star schema, the keys needed for readmission (patient_key, specialty_key, discharge_date_key, encounter_date_key) are already in the fact table.
+- The LATERAL subquery finds only the first qualifying next encounter per inpatient discharge (within 30 days), avoiding the inpatient × all-encounters row explosion.
+- Index support on (patient_key, encounter_date_key) makes the per-patient lookup efficient, so we don’t generate millions of candidate rows.
 QUERY 4: Revenue by Specialty & Month (Star Schema)
 ------------------------------------------------------------
 SQL Query:
