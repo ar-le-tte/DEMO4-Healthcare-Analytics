@@ -1,0 +1,185 @@
+ETL DESIGN (PostgreSQL): OLTP → STAR SCHEMA
+
+Context
+- Source system: normalized OLTP (3NF) healthcare database.
+- Target system: dimensional star schema optimized for analytics.
+- Goal: transform transactional tables into dimensions + a fact table, and keep OLTP IDs in the star schema for traceability.
+- Load approach (lab): full reload (truncate + load), but the logic can be adapted to incremental loads.
+
+1. Dimension Load Logic
+1.1 dim_encounter_type (small static dimension)
+Goal: store a clean list of encounter types used in encounters (Outpatient/Inpatient/ER).
+
+Logic:
+- Extract distinct encounter_type values from the encounters table.
+- Insert into dim_encounter_type.
+- Use ON CONFLICT DO NOTHING so re-running is safe.
+
+Why:
+- Standardizes encounter types and keeps grouping/filtering consistent.
+
+1.2 dim_specialty
+Goal: load specialties used by providers.
+
+Logic:
+- Copy specialty_id, specialty_name, specialty_code from specialties.
+- Insert into dim_specialty.
+- Conflict handling: ON CONFLICT (specialty_id) DO NOTHING.
+
+Why:
+- Specialty is a core slicing dimension across all business questions.
+
+1.3 dim_department
+Goal: load department attributes (name, floor, capacity).
+
+Logic:
+- Copy department_id, department_name, floor, capacity from departments.
+- Insert into dim_department.
+- Conflict handling: ON CONFLICT (department_id) DO NOTHING.
+
+Why:
+- Provides operational context and avoids repeated joins in analytics.
+
+1.4 dim_provider
+Goal: store provider attributes without “snowflaking” specialty into it.
+
+Logic:
+- Copy provider_id, first_name, last_name, credential from providers.
+- Derive provider_name = first_name || ' ' || last_name.
+- Insert into dim_provider.
+- Conflict handling: ON CONFLICT (provider_id) DO NOTHING.
+
+Why:
+- Providers are important for attribution, but specialty stays separate to avoid redundancy.
+
+1.5 dim_patient
+Goal: store patient demographics and precomputed age bands.
+
+Logic:
+- Copy patient_id, MRN, first_name, last_name, gender, date_of_birth from patients.
+- Compute age_years using age(current_date, date_of_birth).
+- Derive age_group during ETL:
+  0-17, 18-34, 35-49, 50-64, 65+.
+- Insert into dim_patient.
+- Conflict handling: ON CONFLICT (patient_id) DO NOTHING.
+
+Why:
+- Avoids recalculating age/age groups in analytical queries.
+
+1.6 dim_diagnosis
+Goal: load ICD-10 reference list.
+
+Logic:
+- Copy diagnosis_id, icd10_code, icd10_description from diagnoses.
+- Insert into dim_diagnosis.
+- Conflict handling: ON CONFLICT (diagnosis_id) DO NOTHING.
+
+1.7 dim_procedure
+Goal: load CPT reference list.
+
+Logic:
+- Copy procedure_id, cpt_code, cpt_description from procedures.
+- Insert into dim_procedure.
+- Conflict handling: ON CONFLICT (procedure_id) DO NOTHING.
+
+1.8 dim_date (generated dimension)
+Goal: build a date table for clean and fast time-based reporting.
+
+Logic:
+- Compute the min/max date across:
+  encounter_date, discharge_date, claim_date, procedure_date.
+- Generate one row per calendar date in that range.
+- Insert into dim_date with:
+  date_key, calendar_date, year, quarter, month_number, month_name,
+  day_of_month, day_of_week, week_of_year, is_weekend.
+- Conflict handling: ON CONFLICT (date_key) DO NOTHING.
+
+Why:
+- Improves readability and avoids repeated date_trunc computations.
+
+2. Fact Table Load Logic (fact_encounters)
+------------------------------------------------------------
+
+Grain: 1 row per encounter_id (one encounter event).
+
+2.1 Foreign key lookups
+For each record in encounters:
+- patient_key from dim_patient using patient_id
+- provider_key from dim_provider using provider_id
+- specialty_key from dim_specialty using the provider’s specialty_id
+- department_key from dim_department using department_id
+- encounter_type_key from dim_encounter_type using encounter_type name
+- encounter_date_key from dim_date using encounter_date::date
+- discharge_date_key from dim_date using discharge_date::date (nullable)
+
+2.2 Pre-aggregated metrics (computed once during ETL)
+We compute:
+- diagnosis_count: number of diagnoses linked to the encounter
+- procedure_count: number of procedures linked to the encounter
+- total_claim_amount: sum(claim_amount) per encounter
+- total_allowed_amount: sum(allowed_amount) per encounter
+- has_billing: TRUE if the encounter has at least one billing row
+- length_of_stay_days: max(0, discharge_date::date - encounter_date::date)
+
+Why:
+- These were expensive in the OLTP queries (joins + group by).
+- Doing them once in ETL makes analytics queries simpler and faster.
+
+2.3 Missing data handling
+- discharge_date may be NULL → discharge_date_key stays NULL.
+- encounters with no billing → totals default to 0 and has_billing = FALSE.
+- encounters with no diagnoses/procedures → counts default to 0.
+
+Load rule:
+- Insert into fact_encounters.
+- Use ON CONFLICT(encounter_id) DO NOTHING for safe re-runs.
+
+3. Bridge Table Load Logic
+------------------------------------------------------------
+
+3.1 bridge_encounter_diagnoses
+Goal: preserve encounter–diagnosis many-to-many relationships without changing the fact table grain.
+
+Logic:
+- Join encounter_diagnoses to fact_encounters using encounter_id.
+- Join to dim_diagnosis using diagnosis_id.
+- Insert into bridge_encounter_diagnoses:
+  (fact_encounter_key, diagnosis_key, diagnosis_sequence).
+- Conflict handling: ON CONFLICT DO NOTHING.
+
+3.2 bridge_encounter_procedures
+Goal: preserve encounter–procedure many-to-many relationships without exploding the fact table.
+
+Logic:
+- Join encounter_procedures to fact_encounters using encounter_id.
+- Join to dim_procedure using procedure_id.
+- Look up procedure_date_key from dim_date using procedure_date.
+- Insert into bridge_encounter_procedures:
+  (fact_encounter_key, procedure_key, procedure_date_key).
+- Conflict handling: ON CONFLICT DO NOTHING.
+
+4. Refresh Strategy
+------------------------------------------------------------
+
+Lab approach:
+- Full reload (truncate and repopulate all star tables) is simplest and reproducible for benchmarking.
+
+Production-style approach:
+- Daily incremental load (e.g., nightly).
+- Full refresh only for the testing, or rare backfills, because it becomes expensive as tables grow.
+
+How to handle late-arriving facts?
+- Use a rolling reprocessing window + upserts:
+  1. Each daily run loads new encounters since the last successful run.
+  2.  Reprocess the last N days (typically 7–30) to capture late billing, diagnosis, or procedure records.
+  3. Update the affected fact rows (totals, counts, has_billing, length_of_stay_days if needed).
+  4.  Insert any new bridge rows into bridge_encounter_diagnoses and bridge_encounter_procedures
+     using ON CONFLICT DO NOTHING to avoid duplicates.
+
+
+- Dimensions: incremental upserts using natural keys (patient_id, provider_id, etc.).
+- Fact table: incremental load of new encounters since last run.
+- Late arriving billing:
+  update total_claim_amount, total_allowed_amount, and has_billing,
+  or reload a rolling window (e.g., last 7–30 days).
+- Bridge tables: incremental inserts for new encounter links.
