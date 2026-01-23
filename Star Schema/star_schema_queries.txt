@@ -17,11 +17,11 @@ ORDER BY
   d.year, d.month_number, s.specialty_name, et.encounter_type_name;
 
 Execution time estimate:
-- Star schema: 11.009 ms
+- Star schema: 22.209 ms
 - OLTP schema: 32.795 ms
 
 Improvement factor:
-32.795 / 11.009 ≈ 2.98x faster
+32.795 / 22.209 ≈ 1.477x faster
 
 Why it’s faster:
 - The fact table already contains the specialty_key and encounter_type_key, so we avoid the OLTP join chain encounters → providers → specialties.
@@ -40,11 +40,11 @@ ORDER BY fp.encounter_count DESC
 LIMIT 20;
 
 Execution time estimate:
-- Star schema (with a pre-aggregated pairs table): 0.180 ms
+- Star schema (with a pre-aggregated pairs table): 10.180 ms
 - OLTP schema: 38.073 ms
 
 Improvement factor:
-38.073 / 0.180 ≈ 211.5x faster
+38.073 / 10.180 ≈ 3.740x faster
 
 Why it’s faster:
 - Instead of joining two junction/bridge tables at query time (which creates a diagnosis_count × procedure_count row explosion per encounter), we precompute the diagnosis–procedure pair counts once into star.fact_diag_proc_pairs.
@@ -79,11 +79,11 @@ GROUP BY s.specialty_name
 ORDER BY readmission_rate DESC;
 
 Execution time estimate:
-- Star schema (optimized): 6.867 ms
+- Star schema (optimized): 18.575 ms
 - OLTP schema: 42.317 ms
 
 Improvement factor:
-42.317 / 6.867 ≈ 6.164x faster
+42.317 / 18.575 ≈ 2.278x faster
 
 Why it’s faster:
 - The OLTP approach needs a heavy self-join on encounters plus a join chain to providers/specialties.
@@ -102,11 +102,11 @@ GROUP BY d.year, d.month_number, d.month_name, s.specialty_name
 ORDER BY d.year, d.month_number, total_allowed_amount DESC;
 
 Execution time estimate:
-- Star schema: 5.902 ms
+- Star schema: 16.382 ms
 - OLTP schema: 63.070 ms
 
 Improvement factor:
-63.070 / 5.902 ≈ 10.69x faster
+63.070 / 16.382 ≈ 3.850x faster
 
 Why it’s faster:
 - In the star schema, billing revenue is already stored in the fact table as total_allowed_amount, so no billing → encounters → providers → specialties join chain is needed.
