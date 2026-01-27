@@ -333,7 +333,7 @@ GROUP BY
 ORDER BY
   d.year, d.month_number, s.specialty_name, et.encounter_type_name;
 
---Qn2. Monthly Encounters by Specialty
+--Qn2. Top Diagnosis-Procedure Pairs
 
 EXPLAIN (ANALYZE)
 SELECT d.icd10_code, p.cpt_code, fp.encounter_count
